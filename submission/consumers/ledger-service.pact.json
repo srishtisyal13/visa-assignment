@@ -1,0 +1,44 @@
+{
+  "consumer": "ledger-service",
+  "provider": "transactions-service",
+  "notes": "System of record downstream. Strict: every field it posts to the general ledger must be present, typed, enumerated and exact. Needs to reconcile (read back) and to dedupe.",
+  "interactions": [
+    {
+      "description": "ledger records each transaction exactly once with an exact signed amount",
+      "request": {
+        "method": "POST", "path": "/transactions",
+        "headers": ["Idempotency-Key"],
+        "body": { "account_id": 1, "operation_type_id": 4, "amount": 60.1 }
+      },
+      "response": {
+        "status": 201,
+        "fields": {
+          "transaction_id": { "type": "integer", "required": true },
+          "account_id": { "type": "integer", "required": true },
+          "operation_type_id": { "type": "integer", "required": true, "oneOf": [1, 2, 3, 4] },
+          "amount": { "type": "number", "required": true },
+          "type": { "type": "string", "required": true, "oneOf": ["debit", "credit"] },
+          "event_date": { "type": "string", "required": true, "format": "date-time" }
+        }
+      }
+    },
+    {
+      "description": "ledger reconciles an account's transactions (nightly)",
+      "request": { "method": "GET", "path": "/accounts/1/transactions" },
+      "response": {
+        "status": 200,
+        "fields": { "transactions": { "type": "array", "required": true } }
+      }
+    },
+    {
+      "description": "ledger rejects unknown operation types upstream (never books an unclassified amount)",
+      "request": {
+        "method": "POST", "path": "/transactions",
+        "headers": ["Idempotency-Key"],
+        "body": { "account_id": 1, "operation_type_id": 99, "amount": 10 }
+      },
+      "response": { "status": 422, "fields": { "error": { "type": "string", "required": true } } },
+      "providerMustRejectRequest": true
+    }
+  ]
+}

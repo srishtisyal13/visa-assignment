@@ -1,0 +1,27 @@
+{
+  "_readme": "T2 SLOs and load profile, declared before the JMeter plan was written. Every number is invented (there is no production data yet) and each has its defence in docs/T2-performance.md §2. tools/perf/check-slo.ts evaluates a JMeter run against these and fails the build on a breach. Changing an SLO needs QA-owner review (CODEOWNERS) and is blocked for bots (heal-guard).",
+  "load": {
+    "transactionsPerSec": 50,
+    "accountsPerSec": 5,
+    "rampSec": 60,
+    "steadySec": 600,
+    "accountPool": 200,
+    "stormConcurrency": 50,
+    "stormRounds": 20
+  },
+  "slos": {
+    "POST /transactions": { "p95Ms": 300, "p99Ms": 800, "maxErrorRate": 0.001, "minThroughputRatio": 0.95 },
+    "POST /accounts": { "p95Ms": 300, "p99Ms": 800, "maxErrorRate": 0.001, "minThroughputRatio": 0.95 },
+    "POST /transactions (same-key storm)": { "p95Ms": 1000, "p99Ms": 2000, "maxErrorRate": 0 }
+  },
+  "correctness": {
+    "CHECK idempotency (same-key storm)": "must pass: at most one transaction per idempotency key under concurrency (distinct transaction_ids, and rows per key when the read path exists)"
+  },
+  "regressionGate": {
+    "historySize": 7,
+    "minHistory": 3,
+    "relativeIncrease": 0.2,
+    "absoluteFloorMs": 50,
+    "minSamples": 1000
+  }
+}

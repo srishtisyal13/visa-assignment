@@ -1,0 +1,6 @@
+diff --git a/framework/client/transactions-client.ts b/framework/client/transactions-client.ts
+--- a/framework/client/transactions-client.ts
++++ b/framework/client/transactions-client.ts
+@@ -88,7 +88,7 @@ export class TransactionsClient {
+-    const headers: Record<string, string> = { accept: 'application/json', ...(req.headers ?? {}) };
++    const headers: Record<string, string> = { accept: 'application/json', 'user-agent': 'qa-suite', ...(req.headers ?? {}) };

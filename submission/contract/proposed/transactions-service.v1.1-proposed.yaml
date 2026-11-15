@@ -1,0 +1,283 @@
+# PROPOSED contract change: NOT the provider's contract.
+# Authored by QA as the "minimum contract change" requested in T1 (PISMO-4412)
+# plus the precision fixes from the C3a audit that are blocking for real money.
+# Every change is tagged  x-qa-change: <finding id>  so the diff is reviewable.
+# Values marked x-qa-pending need an answer from dev/PO (docs/C1 open questions).
+basePath: /
+definitions:
+  handler.accountResponse:
+    required: [account_id, document_number]
+    properties:
+      account_id:
+        example: 1
+        type: integer
+        format: int64
+      document_number:
+        example: "12345678900"
+        type: string
+    type: object
+  handler.createAccountRequest:
+    required: [document_number]                 # x-qa-change: CF-03
+    properties:
+      document_number:
+        example: "12345678900"
+        type: string
+        pattern: '^[0-9]{10,14}$'               # x-qa-change: CF-06 (x-qa-pending: OQ-4 confirms the rule)
+    type: object
+  handler.createTransactionRequest:
+    required: [account_id, operation_type_id, amount]   # x-qa-change: CF-03
+    additionalProperties: false                         # x-qa-change: CF-29 (no silently dropped currency)
+    properties:
+      account_id:
+        example: 1
+        type: integer
+        format: int64
+      amount:
+        example: 50
+        type: number
+        description: Major units (rupees), positive, max 2 decimal places. x-qa-pending OQ-1/OQ-2.
+        minimum: 0
+        exclusiveMinimum: true                  # x-qa-change: CF-02
+        maximum: 10000000                       # x-qa-change: CF-05 (x-qa-pending: OQ-3)
+      operation_type_id:
+        example: 1
+        type: integer
+        enum: [1, 2, 3, 4]                      # x-qa-change: CF-07
+    type: object
+  handler.errorResponse:
+    required: [error]
+    properties:
+      error:
+        example: account not found
+        type: string
+    type: object
+  handler.transactionResponse:
+    required: [transaction_id, account_id, operation_type_id, amount, type, event_date]
+    properties:
+      account_id:
+        example: 1
+        type: integer
+      amount:
+        example: -100.5
+        type: number
+      event_date:
+        example: "2026-05-28T17:00:00Z"
+        type: string
+        format: date-time                       # x-qa-change: CF-09
+      operation_type_id:
+        example: 1
+        type: integer
+        enum: [1, 2, 3, 4]
+      transaction_id:
+        example: 1
+        type: integer
+      type:
+        example: debit
+        type: string
+        enum: [debit, credit]                   # x-qa-change: CF-08
+    type: object
+  handler.transactionList:                      # x-qa-change: CF-01 (T1 observability)
+    type: object
+    required: [transactions]
+    properties:
+      transactions:
+        type: array
+        items:
+          $ref: '#/definitions/handler.transactionResponse'
+    example:
+      transactions:
+        - transaction_id: 1
+          account_id: 1
+          operation_type_id: 1
+          amount: -100.5
+          type: debit
+          event_date: "2026-05-28T17:00:00Z"
+host: localhost:8080
+info:
+  contact: {}
+  description: Pismo-style transactions service. PROPOSED v1.1 (QA). Not published.
+  title: Transactions Service
+  version: "1.1-proposed"
+parameters:
+  RequestId:
+    name: X-Request-Id                          # x-qa-change: CF-12 (hearsay H5 made contractual)
+    in: header
+    required: false
+    type: string
+    description: Optional client-supplied correlation id; echoed back. Server generates one if absent.
+  IdempotencyKey:
+    name: Idempotency-Key                       # x-qa-change: CF-01 (hearsay H3 made contractual)
+    in: header
+    required: true
+    type: string
+    minLength: 1
+    maxLength: 255
+    description: >-
+      Required. Same key + same body within 24h (x-qa-pending OQ-6) returns the
+      original 201 response and creates nothing. Same key + different body returns 422.
+paths:
+  /accounts:
+    post:
+      consumes:
+      - application/json
+      description: Creates a new cardholder account with the given document number
+      parameters:
+      - $ref: '#/parameters/RequestId'
+      - description: Account payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handler.createAccountRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          headers:
+            X-Request-Id: { type: string }
+          schema:
+            $ref: '#/definitions/handler.accountResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+        "409":
+          description: Document number already registered   # x-qa-change: CF-10
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+        "413":
+          description: Payload too large
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+        "415":
+          description: Unsupported media type
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+      summary: Create an account
+      tags:
+      - accounts
+  /accounts/{accountId}:
+    get:
+      description: Returns a single account by its numeric ID
+      parameters:
+      - $ref: '#/parameters/RequestId'
+      - description: Account ID
+        in: path
+        name: accountId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          headers:
+            X-Request-Id: { type: string }
+          schema:
+            $ref: '#/definitions/handler.accountResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+      summary: Get an account
+      tags:
+      - accounts
+  /accounts/{accountId}/transactions:            # x-qa-change: CF-01  THE minimum change for T1
+    get:
+      description: >-
+        Lists transactions recorded against an account, optionally filtered by the
+        idempotency key they were created with. Exists so that "exactly one
+        transaction per idempotency key" is verifiable through the API.
+      parameters:
+      - $ref: '#/parameters/RequestId'
+      - in: path
+        name: accountId
+        required: true
+        type: integer
+      - in: query
+        name: idempotency_key
+        required: false
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handler.transactionList'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+      summary: List an account's transactions
+      tags:
+      - transactions
+  /transactions:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Records a financial operation against an existing account.
+        Operation type IDs: 1=Normal Purchase, 2=Purchase with installments, 3=Withdrawal, 4=Credit Voucher.
+        Send a positive amount. The server applies the correct sign based on operation type:
+        1,2,3 -> amount stored and returned negative, type=debit; 4 -> positive, type=credit.
+      parameters:
+      - $ref: '#/parameters/RequestId'
+      - $ref: '#/parameters/IdempotencyKey'
+      - description: Transaction payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handler.createTransactionRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created (also returned, unchanged, on an idempotent replay)
+          headers:
+            X-Request-Id: { type: string }
+            Idempotent-Replayed: { type: boolean }
+          schema:
+            $ref: '#/definitions/handler.transactionResponse'
+        "400":
+          description: Bad Request (malformed JSON, missing Idempotency-Key)
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+        "409":
+          description: A request with this Idempotency-Key is still in flight
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+        "413":
+          description: Payload too large
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+        "415":
+          description: Unsupported media type
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+        "422":
+          description: Unprocessable (unknown account, unknown operation type, invalid amount, key reused with different body)
+          schema:
+            $ref: '#/definitions/handler.errorResponse'
+      summary: Create a transaction
+      tags:
+      - transactions
+swagger: "2.0"

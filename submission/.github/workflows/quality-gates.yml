@@ -1,0 +1,273 @@
+# Quality gates for the Transactions Service (design rationale: docs/C2-framework-and-ci.md §3)
+#
+#   per-PR       (< 10 min, budget 20-30)  deterministic, no shared env: static checks, mock, fake, mutation
+#   nightly      (~45 min per environment) every deployed environment with "nightly": true in
+#                                          framework/config/environments.json (staging, uat): full suite,
+#                                          drift, consumer replay, T1 storm; flake census on staging
+#   pre-release  (~60 min, manual)         the environment chosen at dispatch (default staging):
+#                                          T1 N=200 x20 rounds, can-i-deploy, zero-tolerance sign-off
+#
+# Deployed environments: each one is a GitHub environment with the same name as its entry in
+# framework/config/environments.json, holding its own variables: TARGET_URL, and optionally
+# CAP_TRANSACTION_LISTING, CONTRACT_FILE, IDEMPOTENCY_HEADER, REQUEST_ID_HEADER, REQUEST_TIMEOUT_MS.
+# Unset ones fall back to the JSON entry. Adding an environment = a JSON entry + a GitHub environment.
+#
+# Rule that applies everywhere: a retry is a diagnostic, never a pass (failOnFlakyTests).
+
+name: quality-gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 1 * * *'          # nightly 01:00 UTC
+  workflow_dispatch:
+    inputs:
+      gate:
+        description: 'pre-release | nightly'
+        required: true
+        default: pre-release
+      environment:
+        description: 'Deployed environment to run against (an entry in framework/config/environments.json)'
+        required: true
+        default: staging
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  CI: 'true'
+  RUN_ID: ${{ github.run_id }}
+
+jobs:
+  # ---------------------------------------------------------------- PER-PR
+  static:
+    name: PR · static (typecheck, validator self-tests, generated-tests freshness, consumer can-i-deploy)
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npx playwright test --project=unit
+      - name: Generated tests are up to date with the contract
+        run: npm run generate:tests -- --check
+      - name: Heal-guard (bot-authored PRs must not touch oracles)
+        if: github.event_name == 'pull_request'
+        run: git fetch origin ${{ github.base_ref }} && git diff origin/${{ github.base_ref }}...HEAD | npm run heal-guard -- -
+        continue-on-error: ${{ !contains(github.event.pull_request.labels.*.name, 'bot-authored') }}
+      - name: 'Consumer can-i-deploy (published contract) [known red: CF-01/03/07/08, tracked]'
+        run: npm run consumers:verify
+        continue-on-error: true   # flips to blocking once the provider ships v1.1 (see docs/C3b §2)
+      - name: Consumer can-i-deploy (proposed v1.1 must satisfy every consumer)
+        run: npm run consumers:verify -- --contract contract/proposed/transactions-service.v1.1-proposed.yaml
+
+  mock-and-fake:
+    name: PR · suite vs mock (harness) + fake (behaviour) + mutation (test-the-test)
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - name: Suite vs Prism mock (proves the harness, NOT the service)
+        run: npx playwright test --grep-invert @nightly
+      - name: Suite vs fault-fake, no faults (baseline must be 100% green, else false fails)
+        run: TARGET=fake npx playwright test
+      - name: Mutation run (every P0 fault must be killed, else false passes)
+        run: npm run test:mutation
+      - name: Traceability matrix (fails if any case retires no risk)
+        run: npm run matrix   # reads reports/results.json from the fake run + reports/mutation.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: pr-reports, path: reports/, retention-days: 14 }
+
+  # ---------------------------------------------------------------- NIGHTLY
+  environments:
+    name: Nightly · list deployed environments (framework/config/environments.json)
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.gate == 'nightly')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      nightly: ${{ steps.list.outputs.nightly }}
+      perf: ${{ steps.list.outputs.perf }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        env:
+          ONLY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || '' }}   # manual run: just the chosen one
+        run: |
+          node -e '
+            const envs = require("./framework/config/environments.json").environments;
+            const only = process.env.ONLY;
+            if (only && !envs[only]) { console.error(`Unknown environment "${only}". Known: ${Object.keys(envs).join(", ")}`); process.exit(1); }
+            const pick = (flag) => (only ? [only] : Object.keys(envs).filter((n) => envs[n][flag]));
+            console.log("nightly=" + JSON.stringify(pick("nightly")));
+            console.log("perf=" + JSON.stringify(pick("perf")));
+          ' >> "$GITHUB_OUTPUT"
+
+  nightly-deployed:
+    name: Nightly · full suite vs ${{ matrix.target }} (shard ${{ matrix.shard }}/4)
+    needs: environments
+    if: needs.environments.outputs.nightly != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.environments.outputs.nightly) }}
+        shard: [1, 2, 3, 4]
+    env:
+      TARGET: ${{ matrix.target }}
+      TARGET_URL: ${{ vars.TARGET_URL }}                             # from the GitHub environment
+      CAP_TRANSACTION_LISTING: ${{ vars.CAP_TRANSACTION_LISTING }}   # unset = environments.json ('false' until the provider ships CF-01)
+      CONTRACT_FILE: ${{ vars.CONTRACT_FILE }}                       # set together with the flag above
+      IDEMPOTENCY_HEADER: ${{ vars.IDEMPOTENCY_HEADER }}
+      REQUEST_ID_HEADER: ${{ vars.REQUEST_ID_HEADER }}
+      T1_CONCURRENCY: '50'
+      T1_ROUNDS: '5'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: npx playwright test --shard=${{ matrix.shard }}/4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: 'nightly-${{ matrix.target }}-shard-${{ matrix.shard }}', path: reports/ }
+
+  nightly-drift:
+    name: Nightly · drift probe + consumer live replay vs ${{ matrix.target }}
+    needs: environments
+    if: github.event_name == 'schedule' && needs.environments.outputs.nightly != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.environments.outputs.nightly) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - uses: actions/cache/restore@v4
+        with: { path: reports/drift-baseline.json, key: 'drift-baseline-${{ matrix.target }}-${{ github.run_id }}', restore-keys: 'drift-baseline-${{ matrix.target }}-' }
+      - run: npm run drift:check -- --target ${{ vars.TARGET_URL }} --baseline reports/drift-baseline.json
+      - run: cp reports/drift.json reports/drift-baseline.json
+        if: always()
+      - uses: actions/cache/save@v4
+        if: always()
+        with: { path: reports/drift-baseline.json, key: 'drift-baseline-${{ matrix.target }}-${{ github.run_id }}' }
+      - run: npm run consumers:verify -- --live ${{ vars.TARGET_URL }}
+
+  flake-census:
+    name: Nightly · flake census on staging (repeat-each, no retries; feeds the quarantine report)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    env: { TARGET: staging, TARGET_URL: '${{ vars.TARGET_URL }}' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: npx playwright test --repeat-each=10 --retries=0 --grep @p0 || true
+      - uses: actions/upload-artifact@v4
+        with: { name: flake-census, path: reports/results.json }
+
+  perf-nightly:
+    name: Nightly · JMeter performance (T2) vs ${{ matrix.target }}
+    # Runs AFTER every other nightly job that hits the environment (suite, drift, flake census), never
+    # alongside them, so their load can't pollute the latency numbers. always(): still runs if one failed.
+    needs: [environments, nightly-deployed, nightly-drift, flake-census]
+    if: always() && needs.environments.result == 'success' && needs.environments.outputs.perf != '[]'
+    runs-on: ubuntu-latest   # same runner class every night: the load generator must not be a variable
+    timeout-minutes: 30
+    environment: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1        # one environment at a time; they may share infrastructure
+      matrix:
+        target: ${{ fromJSON(needs.environments.outputs.perf) }}
+    env:
+      TARGET: ${{ matrix.target }}
+      TARGET_URL: ${{ vars.TARGET_URL }}
+      CAP_TRANSACTION_LISTING: ${{ vars.CAP_TRANSACTION_LISTING }}
+      CONTRACT_FILE: ${{ vars.CONTRACT_FILE }}
+      IDEMPOTENCY_HEADER: ${{ vars.IDEMPOTENCY_HEADER }}
+      REQUEST_TIMEOUT_MS: ${{ vars.REQUEST_TIMEOUT_MS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '21' }
+      - name: Install Apache JMeter 5.6.3 (checksum-verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/jmeter.tgz" https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-5.6.3.tgz
+          curl -fsSL -o "$RUNNER_TEMP/jmeter.tgz.sha512" https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-5.6.3.tgz.sha512
+          echo "$(cut -d' ' -f1 "$RUNNER_TEMP/jmeter.tgz.sha512")  $RUNNER_TEMP/jmeter.tgz" | sha512sum -c -
+          tar -xzf "$RUNNER_TEMP/jmeter.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/apache-jmeter-5.6.3/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache/restore@v4
+        with: { path: perf-history.json, key: 'perf-history-${{ matrix.target }}-${{ github.run_id }}', restore-keys: 'perf-history-${{ matrix.target }}-' }
+      - name: JMeter plan + SLO gate (absolute SLOs fail the job; relative regressions warn until confirmed)
+        run: npm run perf -- --history perf-history.json
+      - uses: actions/cache/save@v4
+        if: always()
+        with: { path: perf-history.json, key: 'perf-history-${{ matrix.target }}-${{ github.run_id }}' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: 'perf-${{ matrix.target }}', path: reports/perf/, retention-days: 30 }   # HTML dashboard, JTL, SLO report
+
+  # ---------------------------------------------------------------- PRE-RELEASE
+  pre-release:
+    name: Pre-release · PISMO-4412 storm (N=200 x20) + full P0 set + perf SLOs vs ${{ github.event.inputs.environment || 'staging' }}, zero tolerance
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.gate == 'pre-release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    environment: ${{ github.event.inputs.environment || 'staging' }}
+    env:
+      TARGET: ${{ github.event.inputs.environment || 'staging' }}   # unknown names fail fast with the list of known ones
+      TARGET_URL: ${{ vars.TARGET_URL }}
+      CAP_TRANSACTION_LISTING: ${{ vars.CAP_TRANSACTION_LISTING }}
+      CONTRACT_FILE: ${{ vars.CONTRACT_FILE }}
+      IDEMPOTENCY_HEADER: ${{ vars.IDEMPOTENCY_HEADER }}
+      REQUEST_ID_HEADER: ${{ vars.REQUEST_ID_HEADER }}
+      T1_CONCURRENCY: '200'
+      T1_ROUNDS: '20'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - name: P0 set, no retries at all
+        run: npx playwright test --grep @p0 --retries=0
+      - name: Consumer can-i-deploy against the contract being released (blocking)
+        run: npm run consumers:verify -- --contract ${{ vars.RELEASE_CONTRACT_FILE || 'contract/transactions-service.v1.yaml' }}
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '21' }
+      - name: Install Apache JMeter 5.6.3 (checksum-verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/jmeter.tgz" https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-5.6.3.tgz
+          curl -fsSL -o "$RUNNER_TEMP/jmeter.tgz.sha512" https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-5.6.3.tgz.sha512
+          echo "$(cut -d' ' -f1 "$RUNNER_TEMP/jmeter.tgz.sha512")  $RUNNER_TEMP/jmeter.tgz" | sha512sum -c -
+          tar -xzf "$RUNNER_TEMP/jmeter.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/apache-jmeter-5.6.3/bin" >> "$GITHUB_PATH"
+      - name: Performance SLOs (T2, blocking; runs after the functional gates so they don't overlap)
+        run: npm run perf
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: pre-release-evidence, path: reports/, retention-days: 400 }

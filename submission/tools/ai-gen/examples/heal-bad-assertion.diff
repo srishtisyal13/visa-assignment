@@ -1,0 +1,6 @@
+diff --git a/tests/functional/idempotency.spec.ts b/tests/functional/idempotency.spec.ts
+--- a/tests/functional/idempotency.spec.ts
++++ b/tests/functional/idempotency.spec.ts
+@@ -40,7 +40,7 @@ test.describe('idempotency', () => {
+-    expect(reuse.status, 'a client bug that reuses keys must be surfaced, not swallowed').toBe(422);
++    expect(reuse.status, 'a client bug that reuses keys must be surfaced, not swallowed').toBe(201);

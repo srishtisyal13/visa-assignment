@@ -1,0 +1,32 @@
+{
+  "_readme": "Deployed environments the suite can target with TARGET=<name>. Add an environment by adding an entry here: no code change. The base URL is not stored here: set <NAME>_URL (e.g. UAT_URL) or TARGET_URL, or add an optional \"url\". Every other value is a per-environment default, and the env var of the same setting overrides it (CONTRACT_FILE, CAP_TRANSACTION_LISTING, IDEMPOTENCY_HEADER, REQUEST_ID_HEADER, REQUEST_TIMEOUT_MS). \"nightly\": true makes CI run the nightly suite and drift probe against it, using the GitHub environment of the same name for its URL and variables; \"perf\": true does the same for the nightly JMeter performance run (T2). Defaults describe the PUBLISHED contract: flip transactionListing and contractFile only once the provider has shipped the read path.",
+  "environments": {
+    "staging": {
+      "nightly": true,
+      "perf": true,
+      "contractFile": "contract/transactions-service.v1.yaml",
+      "transactionListing": false,
+      "idempotencyHeader": "Idempotency-Key",
+      "requestIdHeader": "X-Request-Id",
+      "requestTimeoutMs": 10000
+    },
+    "uat": {
+      "nightly": true,
+      "perf": true,
+      "contractFile": "contract/transactions-service.v1.yaml",
+      "transactionListing": false,
+      "idempotencyHeader": "Idempotency-Key",
+      "requestIdHeader": "X-Request-Id",
+      "requestTimeoutMs": 10000
+    },
+    "preprod": {
+      "nightly": false,
+      "perf": false,
+      "contractFile": "contract/transactions-service.v1.yaml",
+      "transactionListing": false,
+      "idempotencyHeader": "Idempotency-Key",
+      "requestIdHeader": "X-Request-Id",
+      "requestTimeoutMs": 15000
+    }
+  }
+}

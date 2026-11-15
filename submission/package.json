@@ -1,0 +1,50 @@
+{
+  "name": "transactions-service-qa",
+  "version": "1.0.0",
+  "description": "Quality capability for the Transactions Service: contract validation, functional suite, PISMO-4412 guardrail, E2E journey, mutation (test-the-test) and AI-generation guardrails.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "mock": "prism mock -p 4010 -h 127.0.0.1 contract/transactions-service.v1.yaml",
+    "fake": "tsx tools/fault-fake/server.ts",
+    "test": "playwright test",
+    "test:unit": "playwright test --project=unit",
+    "test:contract": "playwright test --project=contract",
+    "test:functional": "playwright test --project=functional",
+    "test:incident": "playwright test --project=incident",
+    "test:e2e": "playwright test --project=e2e",
+    "test:fake": "TARGET=fake playwright test",
+    "test:mutation": "tsx tools/mutation/run.ts",
+    "consumers:verify": "tsx tools/consumers/verify.ts",
+    "drift:check": "tsx tools/drift/check.ts",
+    "generate:tests": "tsx tools/ai-gen/generate-from-contract.ts",
+    "heal-guard": "tsx tools/ai-gen/heal-guard.ts",
+    "matrix": "tsx tools/traceability/build-matrix.ts",
+    "report": "playwright show-report reports/html",
+    "perf": "tsx tools/perf/run.ts",
+    "perf:check": "tsx tools/perf/check-slo.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1",
+    "@stoplight/prism-cli": "5.16.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^24.19.2",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "js-yaml": "^4.1.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=24.18.0"
+  },
+  "overrides": {
+    "postman-collection": {
+      "lodash": "4.18.1",
+      "uuid": "11.1.1"
+    }
+  },
+  "scarfSettings": {
+    "enabled": false
+  }
+}

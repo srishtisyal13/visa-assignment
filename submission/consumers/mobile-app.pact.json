@@ -1,0 +1,51 @@
+{
+  "consumer": "mobile-app",
+  "provider": "transactions-service",
+  "notes": "Tolerant reader: ignores unknown fields. Needs human-readable errors and safe retries on flaky mobile networks.",
+  "interactions": [
+    {
+      "description": "sign-up creates an account",
+      "request": { "method": "POST", "path": "/accounts", "body": { "document_number": "12345678901" } },
+      "response": {
+        "status": 201,
+        "fields": {
+          "account_id": { "type": "integer", "required": true },
+          "document_number": { "type": "string", "required": true }
+        }
+      }
+    },
+    {
+      "description": "sign-up with a bad document shows the server's message",
+      "request": { "method": "POST", "path": "/accounts", "body": { "document_number": "abc" } },
+      "response": { "status": 400, "fields": { "error": { "type": "string", "required": true } } }
+    },
+    {
+      "description": "profile screen loads an account",
+      "request": { "method": "GET", "path": "/accounts/1" },
+      "response": {
+        "status": 200,
+        "fields": {
+          "account_id": { "type": "integer", "required": true },
+          "document_number": { "type": "string", "required": true }
+        }
+      }
+    },
+    {
+      "description": "pay button posts a purchase and retries safely on timeout",
+      "request": {
+        "method": "POST", "path": "/transactions",
+        "headers": ["Idempotency-Key"],
+        "body": { "account_id": 1, "operation_type_id": 1, "amount": 50 }
+      },
+      "response": {
+        "status": 201,
+        "fields": {
+          "transaction_id": { "type": "integer", "required": true },
+          "amount": { "type": "number", "required": true },
+          "type": { "type": "string", "required": true, "oneOf": ["debit", "credit"] },
+          "event_date": { "type": "string", "required": true, "format": "date-time" }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+# Sources of truth for "what correct means" need the payments lead AND the QA owner.
+# (Team handles are placeholders, so replace them with the squad's real GitHub teams.)
+/contract/                         @payments-lead @qa-owner @ledger-team
+/consumers/                        @mobile-team @ledger-team @qa-owner
+/framework/contract/               @qa-owner
+/framework/oracle.ts               @qa-owner
+/framework/mock-divergences.ts     @qa-owner
+/framework/risks.ts                @qa-owner @payments-lead
+/tests/incident/                   @payments-lead @qa-owner
+/playwright.config.ts              @qa-owner
+/perf/                             @qa-owner @sre-team   # JMeter plan and SLOs (T2)
+/framework/config/environments.json @qa-owner   # which deployed environments the gates run against

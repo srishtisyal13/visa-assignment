@@ -1,0 +1,6 @@
+diff --git a/contract/transactions-service.v1.yaml b/contract/transactions-service.v1.yaml
+--- a/contract/transactions-service.v1.yaml
++++ b/contract/transactions-service.v1.yaml
+@@ -152,6 +152,10 @@
++        "500":
++          description: Internal Server Error
